@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Home-made Dinner - Cooking Assistant</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+        
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+        
+        .record-button {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            border: none;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-size: 1.2em;
+            font-weight: bold;
+            cursor: pointer;
+            display: block;
+            margin: 30px auto;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .record-button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+        
+        .record-button:active {
+            transform: scale(0.95);
+        }
+        
+        .record-button.recording {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% {
+                box-shadow: 0 4px 15px rgba(245, 87, 108, 0.4);
+            }
+            50% {
+                box-shadow: 0 4px 25px rgba(245, 87, 108, 0.8);
+            }
+        }
+        
+        .status {
+            text-align: center;
+            margin: 20px 0;
+            min-height: 24px;
+            color: #666;
+            font-style: italic;
+        }
+        
+        .transcript-box, .answer-box {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 15px 0;
+            min-height: 50px;
+        }
+        
+        .transcript-box h3, .answer-box h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .transcript-box p, .answer-box p {
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .audio-player {
+            width: 100%;
+            margin-top: 15px;
+            border-radius: 5px;
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 15px 0;
+            border-left: 4px solid #c33;
+        }
+        
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🍳 Home-made Dinner</h1>
+        <p class="subtitle">Ask me anything about cooking!</p>
+        
+        <button id="recordButton" class="record-button">Click to Ask</button>
+        
+        <div id="status" class="status"></div>
+        
+        <div id="error" class="error hidden"></div>
+        
+        <div id="transcriptBox" class="transcript-box hidden">
+            <h3>Your Question:</h3>
+            <p id="transcript"></p>
+        </div>
+        
+        <div id="answerBox" class="answer-box hidden">
+            <h3>Answer:</h3>
+            <p id="answer"></p>
+            <audio id="audioPlayer" class="audio-player" controls></audio>
+        </div>
+    </div>
+
+    <script>
+        const recordButton = document.getElementById('recordButton');
+        const status = document.getElementById('status');
+        const errorDiv = document.getElementById('error');
+        const transcriptBox = document.getElementById('transcriptBox');
+        const answerBox = document.getElementById('answerBox');
+        const transcript = document.getElementById('transcript');
+        const answer = document.getElementById('answer');
+        const audioPlayer = document.getElementById('audioPlayer');
+        
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+        
+        function showError(message) {
+            errorDiv.textContent = message;
+            errorDiv.classList.remove('hidden');
+            setTimeout(() => {
+                errorDiv.classList.add('hidden');
+            }, 5000);
+        }
+        
+        function updateStatus(message) {
+            status.textContent = message;
+        }
+        
+        recordButton.addEventListener('click', async () => {
+            if (!isRecording) {
+                // Start recording
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+                    
+                    mediaRecorder.ondataavailable = (event) => {
+                        audioChunks.push(event.data);
+                    };
+                    
+                    mediaRecorder.onstop = async () => {
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                        await processAudio(audioBlob);
+                        stream.getTracks().forEach(track => track.stop());
+                    };
+                    
+                    mediaRecorder.start();
+                    isRecording = true;
+                    recordButton.textContent = 'Stop Recording';
+                    recordButton.classList.add('recording');
+                    updateStatus('Recording... Speak your question now.');
+                    
+                } catch (err) {
+                    showError('Error accessing microphone: ' + err.message);
+                }
+            } else {
+                // Stop recording
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                    mediaRecorder.stop();
+                    isRecording = false;
+                    recordButton.textContent = 'Click to Ask';
+                    recordButton.classList.remove('recording');
+                    updateStatus('Processing your question...');
+                }
+            }
+        });
+        
+        async function processAudio(audioBlob) {
+            try {
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'recording.webm');
+                
+                const response = await fetch('/process_voice', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Server error');
+                }
+                
+                const data = await response.json();
+                
+                // Display transcript
+                transcript.textContent = data.transcript;
+                transcriptBox.classList.remove('hidden');
+                
+                // Display answer
+                answer.textContent = data.answer;
+                answerBox.classList.remove('hidden');
+                
+                // Play audio
+                audioPlayer.src = data.audio;
+                audioPlayer.play();
+                
+                if (data.is_goodbye) {
+                    updateStatus('Goodbye! Thanks for cooking with me!');
+                } else {
+                    updateStatus('Done! Listen to the answer above.');
+                }
+                
+            } catch (err) {
+                showError('Error processing audio: ' + err.message);
+                updateStatus('');
+            }
+        }
+    </script>
+</body>
+</html>
+
