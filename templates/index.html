@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Home-made Dinner - Cooking Assistant</title>
+    <title>Home-made Dinner - Real-time Cooking Assistant</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -25,7 +26,7 @@
             background: white;
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            max-width: 600px;
+            max-width: 700px;
             width: 100%;
             padding: 40px;
         }
@@ -60,17 +61,27 @@
             box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
         }
         
-        .record-button:hover {
+        .record-button:hover:not(:disabled) {
             transform: scale(1.05);
             box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
         }
         
-        .record-button:active {
+        .record-button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .record-button:active:not(:disabled) {
             transform: scale(0.95);
         }
         
-        .record-button.recording {
+        .record-button.listening {
             background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            animation: pulse 1.5s infinite;
+        }
+        
+        .record-button.conversing {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
             animation: pulse 1.5s infinite;
         }
         
@@ -97,6 +108,8 @@
             padding: 15px;
             margin: 15px 0;
             min-height: 50px;
+            max-height: 200px;
+            overflow-y: auto;
         }
         
         .transcript-box h3, .answer-box h3 {
@@ -110,12 +123,12 @@
         .transcript-box p, .answer-box p {
             color: #333;
             line-height: 1.6;
+            margin: 5px 0;
         }
         
-        .audio-player {
-            width: 100%;
-            margin-top: 15px;
-            border-radius: 5px;
+        .transcript-box p.interim {
+            color: #999;
+            font-style: italic;
         }
         
         .hidden {
@@ -131,137 +144,386 @@
             border-left: 4px solid #c33;
         }
         
+        .conversation-log {
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 20px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+        
+        .conversation-entry {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        
+        .conversation-entry.user {
+            background: #e3f2fd;
+            text-align: right;
+        }
+        
+        .conversation-entry.agent {
+            background: #f1f8e9;
+            text-align: left;
+        }
+        
+        .audio-visualizer {
+            width: 100%;
+            height: 50px;
+            margin: 15px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 3px;
+        }
+        
+        .audio-bar {
+            width: 4px;
+            background: #667eea;
+            border-radius: 2px;
+            transition: height 0.1s ease;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🍳 Home-made Dinner</h1>
-        <p class="subtitle">Ask me anything about cooking!</p>
+        <p class="subtitle">Real-time Cooking Assistant - Click to Start Conversation</p>
         
-        <button id="recordButton" class="record-button">Click to Ask</button>
+        <button id="recordButton" class="record-button">Start Conversation</button>
         
-        <div id="status" class="status"></div>
+        <div id="status" class="status">Ready to chat</div>
         
         <div id="error" class="error hidden"></div>
         
-        <div id="transcriptBox" class="transcript-box hidden">
-            <h3>Your Question:</h3>
-            <p id="transcript"></p>
-        </div>
+        <div id="conversationLog" class="conversation-log hidden"></div>
         
-        <div id="answerBox" class="answer-box hidden">
-            <h3>Answer:</h3>
-            <p id="answer"></p>
-            <audio id="audioPlayer" class="audio-player" controls></audio>
+        <div id="audioVisualizer" class="audio-visualizer hidden">
+            <div class="audio-bar"></div>
+            <div class="audio-bar"></div>
+            <div class="audio-bar"></div>
+            <div class="audio-bar"></div>
         </div>
     </div>
 
     <script>
+        // Basic test - check if SocketIO is loaded
+        console.log('SocketIO loaded:', typeof io !== 'undefined');
+        
+        // Initialize SocketIO connection
+        const socket = io();
+        
         const recordButton = document.getElementById('recordButton');
         const status = document.getElementById('status');
         const errorDiv = document.getElementById('error');
-        const transcriptBox = document.getElementById('transcriptBox');
-        const answerBox = document.getElementById('answerBox');
-        const transcript = document.getElementById('transcript');
-        const answer = document.getElementById('answer');
-        const audioPlayer = document.getElementById('audioPlayer');
         
-        let mediaRecorder;
-        let audioChunks = [];
-        let isRecording = false;
+        // Connection event handlers
+        socket.on('connect', () => {
+            console.log('✅ Connected to server!');
+            updateStatus('Connected to server');
+        });
         
-        function showError(message) {
-            errorDiv.textContent = message;
-            errorDiv.classList.remove('hidden');
+        socket.on('connected', (data) => {
+            console.log('Server response:', data);
+        });
+        
+        socket.on('disconnect', () => {
+            console.log('❌ Disconnected from server');
+            updateStatus('Disconnected');
+        });
+        
+        socket.on('conversation_started', (data) => {
+            console.log('Conversation started:', data);
+            updateStatus('Conversation starting...');
+        });
+        
+        let isConversationActive = false;
+        let audioContext = null; // For input
+        let mediaStream = null;
+        let audioProcessor = null;
+        
+        // Audio output variables (separate from input)
+        let audioOutputContext = null;
+        let isAudioOutputPlaying = false;
+        let nextPlayTime = 0; // Track when the next audio chunk should start
+        let audioOutputSampleRate = 24000; // Default, Deepgram Aura TTS uses 24kHz
+        
+        socket.on('agent_ready', (data) => {
+            console.log('Agent ready:', data);
+            updateStatus('Agent ready! Start speaking...');
+            isConversationActive = true;
+            recordButton.disabled = false;
+            recordButton.textContent = 'Conversation Active';
+            recordButton.classList.add('conversing');
+            
+            // Start capturing audio
+            startAudioCapture();
+        });
+        
+        socket.on('error', (data) => {
+            console.error('Error:', data);
+            showError(data.message || 'An error occurred');
+            recordButton.disabled = false;
+            recordButton.textContent = 'Start Conversation';
+        });
+        
+        socket.on('agent_error', (data) => {
+            console.error('Agent Error:', data);
+            showError(data.error || 'Agent error occurred');
+            endConversation();
+        });
+        
+        socket.on('goodbye_detected', (data) => {
+            console.log('Goodbye detected:', data);
+            updateStatus(data.message || 'Goodbye!');
             setTimeout(() => {
-                errorDiv.classList.add('hidden');
-            }, 5000);
+                endConversation();
+            }, 2000);
+        });
+        
+        socket.on('transcript', (data) => {
+            console.log('Transcript:', data);
+            if (data.text) {
+                addToConversationLog(data.text, 'user');
+            }
+        });
+        
+        socket.on('agent_response', (data) => {
+            console.log('Agent response:', data);
+            if (data.text) {
+                addToConversationLog(data.text, 'agent');
+            }
+        });
+        
+        socket.on('agent_audio', (data) => {
+            // console.log('Agent audio received');
+            playAudioOutput(data.audio, data.sampleRate);
+        });
+        
+        function addToConversationLog(text, type) {
+            const log = document.getElementById('conversationLog');
+            if (!log) return;
+            log.classList.remove('hidden');
+            const entry = document.createElement('div');
+            entry.className = `conversation-entry ${type}`;
+            entry.textContent = text;
+            log.appendChild(entry);
+            log.scrollTop = log.scrollHeight;
+        }
+        
+        // Function to play audio output received from the server
+        function playAudioOutput(base64Audio, sampleRate) {
+            try {
+                // Create audio context if it doesn't exist
+                if (!audioOutputContext) {
+                    audioOutputContext = new (window.AudioContext || window.webkitAudioContext)();
+                    // Initialize nextPlayTime to current audio context time
+                    nextPlayTime = audioOutputContext.currentTime;
+                }
+                
+                // Update sample rate if provided
+                if (sampleRate) {
+                    audioOutputSampleRate = sampleRate;
+                }
+                
+                // Decode base64 to get binary audio data
+                const audioData = atob(base64Audio);
+                const binaryData = new Uint8Array(audioData.length);
+                for (let i = 0; i < audioData.length; i++) {
+                    binaryData[i] = audioData.charCodeAt(i);
+                }
+                
+                // Convert the binary audio data to Int16Array (raw PCM format from server)
+                const pcmData = new Int16Array(binaryData.buffer);
+                
+                // Create a float32 array for the audio buffer
+                const floatData = new Float32Array(pcmData.length);
+                
+                // Convert Int16 PCM to Float32 audio data
+                for (let i = 0; i < pcmData.length; i++) {
+                    // Convert from Int16 (-32768 to 32767) to Float32 (-1.0 to 1.0)
+                    floatData[i] = pcmData[i] / 32768.0;
+                }
+                
+                // Create an audio buffer with the correct sample rate
+                const audioBuffer = audioOutputContext.createBuffer(1, floatData.length, audioOutputSampleRate);
+                audioBuffer.getChannelData(0).set(floatData);
+                
+                // Schedule the audio buffer for seamless playback
+                scheduleAudioBuffer(audioBuffer);
+                
+            } catch (err) {
+                console.error('Error processing audio output:', err);
+            }
+        }
+        
+        // Schedule audio buffer for seamless playback
+        function scheduleAudioBuffer(audioBuffer) {
+            try {
+                // Create audio source
+                const source = audioOutputContext.createBufferSource();
+                source.buffer = audioBuffer;
+                
+                // Add a gain node for volume control
+                const gainNode = audioOutputContext.createGain();
+                gainNode.gain.value = 1.0; // Full volume
+                
+                // Connect the nodes
+                source.connect(gainNode);
+                gainNode.connect(audioOutputContext.destination);
+                
+                // Calculate when this chunk should start playing
+                const currentTime = audioOutputContext.currentTime;
+                const bufferDuration = audioBuffer.duration;
+                
+                // If nextPlayTime is in the past or too close to current time, move it slightly ahead
+                if (nextPlayTime <= currentTime + 0.03) {
+                    nextPlayTime = currentTime + 0.03; // Small buffer to prevent glitches
+                }
+                
+                // Schedule the audio to start at the calculated time
+                source.start(nextPlayTime);
+                
+                // Update nextPlayTime for the next chunk
+                nextPlayTime += bufferDuration;
+                
+            } catch (err) {
+                console.error('Error scheduling audio buffer:', err);
+                // Reset timing on error
+                nextPlayTime = audioOutputContext.currentTime;
+            }
         }
         
         function updateStatus(message) {
             status.textContent = message;
+            console.log('Status:', message);
         }
         
-        recordButton.addEventListener('click', async () => {
-            if (!isRecording) {
-                // Start recording
-                try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    mediaRecorder = new MediaRecorder(stream);
-                    audioChunks = [];
-                    
-                    mediaRecorder.ondataavailable = (event) => {
-                        audioChunks.push(event.data);
-                    };
-                    
-                    mediaRecorder.onstop = async () => {
-                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                        await processAudio(audioBlob);
-                        stream.getTracks().forEach(track => track.stop());
-                    };
-                    
-                    mediaRecorder.start();
-                    isRecording = true;
-                    recordButton.textContent = 'Stop Recording';
-                    recordButton.classList.add('recording');
-                    updateStatus('Recording... Speak your question now.');
-                    
-                } catch (err) {
-                    showError('Error accessing microphone: ' + err.message);
-                }
-            } else {
-                // Stop recording
-                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                    mediaRecorder.stop();
-                    isRecording = false;
-                    recordButton.textContent = 'Click to Ask';
-                    recordButton.classList.remove('recording');
-                    updateStatus('Processing your question...');
-                }
-            }
-        });
+        function showError(message) {
+            errorDiv.textContent = message;
+            errorDiv.classList.remove('hidden');
+        }
         
-        async function processAudio(audioBlob) {
+        // Start audio capture
+        async function startAudioCapture() {
             try {
-                const formData = new FormData();
-                formData.append('audio', audioBlob, 'recording.webm');
-                
-                const response = await fetch('/process_voice', {
-                    method: 'POST',
-                    body: formData
+                console.log('Requesting microphone access...');
+                mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        sampleRate: 44100,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    } 
                 });
                 
-                if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.error || 'Server error');
-                }
+                console.log('Microphone access granted');
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 44100
+                });
                 
-                const data = await response.json();
+                const source = audioContext.createMediaStreamSource(mediaStream);
+                const processor = audioContext.createScriptProcessor(4096, 1, 1);
                 
-                // Display transcript
-                transcript.textContent = data.transcript;
-                transcriptBox.classList.remove('hidden');
+                processor.onaudioprocess = (e) => {
+                    if (isConversationActive && socket.connected) {
+                        const inputData = e.inputBuffer.getChannelData(0);
+                        
+                        // Convert Float32Array to Int16Array for linear16 encoding
+                        const int16Data = new Int16Array(inputData.length);
+                        for (let i = 0; i < inputData.length; i++) {
+                            // Clamp to [-1, 1] and convert to 16-bit integer
+                            int16Data[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
+                        }
+                        
+                        // Convert Int16Array to Uint8Array (little-endian)
+                        const uint8Data = new Uint8Array(int16Data.buffer);
+                        
+                        // Convert to base64 using binary string method
+                        let binaryString = '';
+                        for (let i = 0; i < uint8Data.length; i++) {
+                            binaryString += String.fromCharCode(uint8Data[i]);
+                        }
+                        
+                        const base64Audio = btoa(binaryString);
+                        
+                        socket.emit('audio_chunk', {
+                            audio: base64Audio
+                        });
+                        
+                        // Log every 100th chunk to avoid spam
+                        if (Math.random() < 0.01) {
+                            console.log('Sent audio chunk:', base64Audio.substring(0, 20) + '...');
+                        }
+                    }
+                };
                 
-                // Display answer
-                answer.textContent = data.answer;
-                answerBox.classList.remove('hidden');
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+                audioProcessor = processor;
                 
-                // Play audio
-                audioPlayer.src = data.audio;
-                audioPlayer.play();
-                
-                if (data.is_goodbye) {
-                    updateStatus('Goodbye! Thanks for cooking with me!');
-                } else {
-                    updateStatus('Done! Listen to the answer above.');
-                }
+                audioVisualizer.classList.remove('hidden');
+                console.log('Audio capture started');
                 
             } catch (err) {
-                showError('Error processing audio: ' + err.message);
-                updateStatus('');
+                console.error('Error accessing microphone:', err);
+                showError('Error accessing microphone: ' + err.message);
+                endConversation();
             }
         }
+        
+        // Stop audio capture
+        function stopAudioCapture() {
+            console.log('Stopping audio capture');
+            if (audioProcessor) {
+                audioProcessor.disconnect();
+                audioProcessor = null;
+            }
+            
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+            
+            audioVisualizer.classList.add('hidden');
+        }
+        
+        // End conversation
+        function endConversation() {
+            console.log('Ending conversation');
+            isConversationActive = false;
+            stopAudioCapture();
+            
+            socket.emit('end_conversation');
+            
+            recordButton.textContent = 'Start Conversation';
+            recordButton.classList.remove('conversing', 'listening');
+            recordButton.disabled = false;
+            updateStatus('Conversation ended. Click to start a new conversation.');
+        }
+        
+        // Button click handler
+        recordButton.addEventListener('click', () => {
+            if (!isConversationActive) {
+                console.log('Button clicked - starting conversation');
+                updateStatus('Button clicked, sending start_conversation...');
+                
+                // Emit the start_conversation event
+                socket.emit('start_conversation');
+                
+                recordButton.disabled = true;
+                recordButton.textContent = 'Starting...';
+            } else {
+                endConversation();
+            }
+        });
     </script>
 </body>
 </html>
-
